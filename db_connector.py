@@ -31,6 +31,14 @@ class DBConnector:
         except Error as e:
             print(e)
 
+    def check_table_exists(self, tablename):
+        c = self.conn.cursor()
+        try:
+            c.execute(f"SELECT * FROM {tablename}")
+            return True
+        except sqlite3.OperationalError:
+            return False
+
     def add_table(self, table_name, keys: dict = None):
         """ create a table from the create_table_sql statement
             Arguments:

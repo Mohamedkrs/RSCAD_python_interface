@@ -651,11 +651,12 @@ class RuntimeRegulation:
 class GTNETRegulation:
     """Regulate class."""
 
-    def __init__(self, ip, port, table_name=None):
+    def __init__(self, ip, port, table_name=None, gen_pref_names=None):
         """initialize class.
         :param str ip: IP address.
         :param int port: Port number.
         :param str table_name: Name of the table to store or read the results from.
+        :param list gen_pref_names: List of reference P of the generators.
         """
         self.logger = logging.getLogger("Regulation")
         self.logger.setLevel(logging.DEBUG)
@@ -670,7 +671,13 @@ class GTNETRegulation:
         if table_name is not None:
             self.table_name = table_name
             self.database = DBConnector("Database.db")
-            self.load_index, self.database_dict = self.data.get_database_dict()
+            self.logger.info("Connected successful to the database Database.db")
+            if self.database.check_table_exists(table_name):
+                return
+            if gen_pref_names is None:
+                self.logger.error(f"Cannot create table {table_name}, please provide 'gen_pref_names' parameter")
+                return
+            self.load_index, self.database_dict = self.data.get_database_dict_GTNET(gen_pref_names)
             self.database.add_table(self.table_name, self.database_dict)
 
     def one_gen_regulation(self, generator, initial_value=0, min_max=None, reference_value=377, step=0.001, offset=.1,
@@ -998,7 +1005,7 @@ class GTNETRegulation:
 
         if rated_power is None:
             rated_power = self.data.get_rms_power(generators)
-        if u_ll_rms  is None:
+        if u_ll_rms is None:
             u_ll_rms = self.data.get_rated_voltage(generators)
 
         rms_current_names = []
@@ -1076,8 +1083,8 @@ class GTNETRegulation:
 
             current_value_list[high_index] -= step
             current_res = \
-            self.simulation.set_value_and_read_output(current_value_list, self.data.unpacked_types, delay)[
-                result_index]
+                self.simulation.set_value_and_read_output(current_value_list, self.data.unpacked_types, delay)[
+                    result_index]
             if delay == -1:
                 current_res = self.__dynamic_stabilisation(current_value_list, current_res)
             k += 1
@@ -1187,3 +1194,64 @@ class GTNETRegulation:
                      current] ** 2
         rms_current = math.sqrt(i / 3)
         return rms_current
+
+    def save_results(self, values, load_indexes, p_ref_indexes):
+        """Save results in the data base.
+
+        :param list values: The values to be set, (generally the last value of the regulation should be put as parameter).
+        :param list load_indexes: The indexes of the load active and reactive power.
+        :param list p_ref_indexes: The indexes of the p ref of the generators.
+        :return:
+        """
+        data = []
+        res = self.simulation.set_value_and_read_output(values, self.data.unpacked_types)
+        for load_index in load_indexes:
+            data.append(res[load_index])
+        for p_ref_index in p_ref_indexes:
+            data.append(res[p_ref_index])
+        self.database.add_data_to_table(self.table_name, data)
+
+    def predictive_regulation(self, diff=5, first=True, regulate=False):
+        """Predict the best grid parameter based on previous runs and optionally continue regulating
+
+        :param int diff: Maximum difference between current and stored data.
+        :param boo first: Grab first match if True.
+        :param bool regulate: Continue regulation if set to True.
+        """
+        res = self.find_matches(diff, first)
+        if res:
+            self.simulation.set_value_and_read_output(res, self.data.unpacked_types)
+
+    def find_matches(self, current_values, diff, first):
+        """Find matches in the data base.
+
+        :param list current_values: The current values iof the loads in the simualtion.
+        :param int diff: Maximum difference between current and stored data.
+        :param boo first: Grab first match if True.
+        :return list of the matched data.
+        :rtype list
+        """
+        headers = self.database.headers(self.table_name)[:self.load_index]
+        database_data = self.database.read_data(self.table_name)
+        old_difference = diff * (self.load_index + 1)
+        data = 0
+        for stored_data in database_data:
+            if all(abs(stored_data[index] - current_values[index]) > diff for
+                   index in range(self.load_index)):
+                continue
+            current_diff = sum(
+                [abs(stored_data[index] - current_values[index]) > diff for
+                 index in range(self.load_index)])
+            if first:
+                self.logger.info(
+                    f"Found first matching values in the database, setting {self.database.headers(self.table_name)[self.load_index:]} to {stored_data[self.load_index:]}")
+                return stored_data[self.load_index:]
+            if current_diff < old_difference:
+                old_difference = current_diff
+                data = stored_data
+        if old_difference == diff * (self.load_index + 1):
+            self.logger.debug(f"No values found in {self.table_name}")
+            return False
+        self.logger.info(
+            f"Found values in the database, setting {self.database.headers(self.table_name)[self.load_index:]} to {data[self.load_index:]}")
+        return data[self.load_index:]

@@ -482,3 +482,17 @@ class DataExtractor:
         except:
             self.logger.warning("Some components do not have a unique name")
         return load_index, database_dict
+
+    def get_database_dict_GTNET(self, gen_pref_names):
+        """Grab stored grid data."""
+        database_dict = {}
+        try:
+            for load, active_reactive_power in zip(self.grid_data["loads"].values(), self.load_active_reactive_power()):
+                for active_power in active_reactive_power:
+                    database_dict[load[active_power]["name"]] = "FLOAT"
+        except:
+            self.logger.warning("Some components do not have a unique name")
+        load_index = len(database_dict.keys())
+        for p_ref in gen_pref_names:
+            database_dict[p_ref] = "FLOAT"
+        return load_index, database_dict
